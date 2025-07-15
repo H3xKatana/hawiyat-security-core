@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Environment
+.env
+
+# Docker
+*.pid
+*.log
+dist/
+build/
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
+
+# Project-specific
+output-example/
+scan-result.json
+*.cdx.json
+*.spdx.json
+
+# OS
+Thumbs.db
+
+# Test/coverage
+.coverage
+htmlcov/
+
+# Misc
+*.swp
+*~

@@ -1,0 +1,17 @@
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.vscode/
+.idea/
+.DS_Store
+output-example/
+scan-result.json
+*.cdx.json
+*.spdx.json
+.coverage
+htmlcov/
+*.swp
+*~
