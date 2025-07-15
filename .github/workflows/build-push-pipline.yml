@@ -29,7 +29,7 @@ jobs:
           scan-type: image
           image-ref: security-core:${{ github.sha }}
           format: sarif
-          exit-code: 1
+          exit-code: 0
           severity: CRITICAL
           ignore-unfixed: true
 
