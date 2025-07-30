@@ -246,5 +246,3 @@ The scan result will be saved as `scan-result.json`. Open it in your favorite ed
 - If you need to install additional dependencies, update your `requirements.txt` and rebuild.
 
 ---
-
-Let me know if you encounter any issues or want to test a specific use case! 
