@@ -11,9 +11,9 @@ from api.schemas import ScanRequest
 SCAN_TYPE_TO_CMD = {
     'image': lambda target: ["image", target],
     'codebase': lambda target: ["fs", target],
-    'compose': lambda target: ["config", "--input", target],
+    'compose': lambda target: ["config",  target],
     'repo': lambda target: ["repo", target],  # local or remote repo
-    'k8s': lambda target: ["config", "--input", target],
+    'k8s': lambda target: ["config", target],
     'helm': lambda target: ["helm", target],
     'sbom': lambda target: ["sbom", target],
 }
