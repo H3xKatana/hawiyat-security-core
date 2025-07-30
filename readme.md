@@ -12,7 +12,7 @@ The Hawiyat Security Engine provides a REST API for security scanning of various
   - **Description:** Returns API health status.
   - **Response:** `{ "status": "ok" }`
 
-### Scan Resource
+### General Scan
 - **POST** `/scan`
   - **Description:** Scan a resource (image, codebase, compose, repo, k8s, helm) with optional advanced options.
   - **Request Body:**
@@ -28,21 +28,43 @@ The Hawiyat Security Engine provides a REST API for security scanning of various
   - **Response:**
     - Returns a downloadable JSON file (`scan-result.json`) with the scan results.
 
-#### Example Request
-```json
-POST /scan
-{
-  "type": "image",
-  "target": "nginx:latest",
-  "sbom": true,
-  "secrets": true
-}
-```
+### Extract Images from File
+- **POST** `/extract`
+  - **Description:** Extracts container names and images from a Dockerfile, Docker Compose, or Swarm file.
+  - **Request Body:** `{ "file_path": "/path/to/your/file" }`
+  - **Example Response:**
+    ```json
+    {
+      "success": true,
+      "containers": [
+        { "image": "nginx:latest" },
+        { "image": "mysql:5.7" }
+      ]
+    }
+    ```
 
-#### Example Response
-- HTTP 200
-- Header: `Content-Disposition: attachment; filename=scan-result.json`
-- Body: JSON scan result
+### Scan Images from Dockerfile/Compose
+- **POST** `/scan/docker`
+  - **Description:** Extracts all unique images from a Dockerfile, Compose, or Swarm file, scans each one, and returns a focused list of vulnerabilities.
+  - **Request Body:** `{ "file_path": "/path/to/your/file" }`
+  - **Example Response:**
+    ```json
+    {
+      "success": true,
+      "results": {
+        "nginx:latest": {
+          "success": true,
+          "vulnerabilities": [
+            { "VulnerabilityID": "CVE-...", "PkgName": "...", "Severity": "HIGH" }
+          ]
+        },
+        "mysql:5.7": {
+          "success": true,
+          "vulnerabilities": []
+        }
+      }
+    }
+    ```
 
 ---
 
@@ -104,58 +126,8 @@ POST /scan
 
 ---
 
-## Advanced Options
-
-- **sbom**: If true, Trivy will generate a Software Bill of Materials (SBOM) for the target.
-- **compliance**: Specify a compliance standard (e.g., `CIS`) to check against.
-- **secrets**: If true, enables secret scanning.
-- **license**: If true, enables license scanning.
-- **branch/tag/commit**: For `repo` scans, specify a branch, tag, or commit to scan.
-
----
-
 ## Error Handling
 - If a scan fails, the JSON result will include `success: false` and an `error` message.
-
----
-
-## Example Use Cases
-
-### Scan a Docker Image for Vulnerabilities and Secrets
-```json
-{
-  "type": "image",
-  "target": "alpine:3.18.4",
-  "secrets": true
-}
-```
-
-### Scan a Local Codebase for Compliance
-```json
-{
-  "type": "codebase",
-  "target": "/app/src",
-  "compliance": "CIS"
-}
-```
-
-### Scan a Remote GitHub Repo (main branch) for Licenses
-```json
-{
-  "type": "repo",
-  "target": "https://github.com/example/repo.git",
-  "branch": "main",
-  "license": true
-}
-```
-
-### Scan a Kubernetes Manifest
-```json
-{
-  "type": "k8s",
-  "target": "deployment.yaml"
-}
-```
 
 ---
 
