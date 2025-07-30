@@ -1,0 +1,57 @@
+# images are built from local files 
+# file writteb by me but still missing some health checks 
+
+services:
+  db:
+    image: postgres:15-alpine  
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+        - main-network
+
+  redis:
+    image: redis:alpine
+    networks:
+        - main-network
+
+  vote:
+    image: 0xkatana/vote:latest
+    #build: 
+    #  context: ./vote
+    # dockerfile: Dockerfile
+    #  target: final
+    ports:
+      - "8080:80"  
+    depends_on:
+      - redis
+    networks:
+      - main-network
+
+  result:
+    image: 0xkatana/result:latest
+    #build: ./result
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+    networks:
+      - main-network
+
+  worker:  
+    image: 0xkatana/worker:latest
+    #build: ./worker
+    depends_on:
+      - db
+      - redis
+    networks:
+      - main-network
+
+networks:
+  main-network:
+
+volumes:
+  postgres-data:

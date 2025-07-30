@@ -1,0 +1,19 @@
+FROM python:3.11-alpine
+
+# Install Trivy dependencies and Trivy itself
+RUN apk add --no-cache curl git && \
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+
+# Add this line:
+ENV PYTHONPATH=/app/src
+
+EXPOSE 8000
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
