@@ -1,5 +1,4 @@
 fastapi
 uvicorn
-pydantic
-httpx
-pyyaml 
+docker
+glob2
