@@ -123,9 +123,6 @@ def get_latest_scans():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-
-
-
 @router.post("/scan/full")
 def full_scan():
     """
@@ -156,7 +153,6 @@ def full_scan():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-
 @router.post("/scan/specific")
 def specific_scan(targets: list[str] = Body(..., embed=True)):
     """
@@ -186,26 +182,23 @@ def specific_scan(targets: list[str] = Body(..., embed=True)):
 
 @router.get("/target/list")
 def list_targets():
-    """
-    Retrieve a list of all available images and running containers on the host machine.
-    """
+    """Retrieve all available Docker images."""
     try:
-        # List all running containers
-        containers = docker_client.containers.list()
-        container_names = [container.name for container in containers]
-        container_images = [container.image.tags[0] if container.image.tags else "<unknown>" for container in containers]
-
-        # Remove duplicates from images
-        unique_images = list(set(container_images))
-
+        images = docker_client.images.list()
+        image_tags = []
+        
+        for image in images:
+            if image.tags:
+                image_tags.extend(image.tags)
+            else:
+                image_tags.append(f"<none>:{image.short_id}")
+        
         return {
             "success": True,
-            "containers": container_names,
-            "images": unique_images
+            "images": list(dict.fromkeys(image_tags))
         }
-
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Failed to retrieve Docker images"}
     
 
 
