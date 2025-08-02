@@ -7,10 +7,13 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - /etc/hawiyat:/etc/hawiyat # binding host machine hawiyat configs
-      - ./src:/app/src
-      - ./requirements.txt:/app/requirements.txt
+      # for dev hot reloading
+      - ./src:/app/src 
+      - ./scans:/app/scans 
       - ./test-files:/app/test-files
+      - ./requirements.txt:/app/requirements.txt
+
+      - /etc/hawiyat:/etc/hawiyat # binding host machine hawiyat configs
       - /var/run/docker.sock:/var/run/docker.sock # binding the host machine docker socket to our container
     ports:
       - "8000:8000"
