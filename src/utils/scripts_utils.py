@@ -32,22 +32,28 @@ def save_full_scan_results(scan_results, base_dir="scans"):
 
     return scan_filename
 
-def calculate_vulnerability_stats(scan_results):
+def calculate_vulnerability_stats(scan_results,imageName=None):
     """
     Calculate the number of vulnerabilities by severity (LOW, MEDIUM, HIGH, CRITICAL).
     """
     severity_counts = {"LOW": 0, "MEDIUM": 0, "HIGH": 0, "CRITICAL": 0}
+    results = scan_results.get("result", {}).get("Results", [])
 
-    for result in scan_results:
-        if "vulnerabilities" in result:
-            for vuln in result["vulnerabilities"]:
-                severity = vuln.get("Severity", "").upper()
-                if severity in severity_counts:
+    for result in results:
+        vulns = result.get("Vulnerabilities", [])
+        for vuln in vulns:
+            vid = vuln.get("VulnerabilityID", "Unknown ID")
+            severity = vuln.get("Severity", "Unknown Severity")
+            if severity in severity_counts:
                     severity_counts[severity] += 1
+
+    
+                
 
     total_vulnerabilities = sum(severity_counts.values())
 
     return {
+        "image" : imageName ,
         "severity_counts": severity_counts,
         "total_vulnerabilities": total_vulnerabilities
     }

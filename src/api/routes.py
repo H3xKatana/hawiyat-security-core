@@ -167,7 +167,7 @@ def full_scan():
                 "result": result
             })
             
-            scan_stats.append(calculate_vulnerability_stats(result))
+            scan_stats.append(calculate_vulnerability_stats(result,tag))
 
 
         scan_filename = save_full_scan_results(scan_results)
