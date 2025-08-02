@@ -4,10 +4,15 @@ from api.schemas import ScanRequest, ScanResult
 from engine import scan_engine
 import json
 import os
-from utils.extract_containers import extract_containers_and_images
+from utils.extract_containers import extract_containers_and_images 
+from utils.scripts_utils import save_scan_result, save_full_scan_results , calculate_vulnerability_stats
 from datetime import datetime
 import docker
 import glob
+import sys
+
+
+
 
 router = APIRouter()
 
@@ -126,18 +131,28 @@ def get_latest_scans():
 @router.post("/scan/full")
 def full_scan():
     """
-    Trigger a full scan of all images used by running containers on the host machine.
+    Trigger a full scan of all unique images on the host machine, scanning only the newest version of each image.
+    Store all results in a single file.
     """
     try:
-        # List all running containers
-        containers = docker_client.containers.list()
-        scan_results = []
+        images = docker_client.images.list()
+        unique_images = {}
 
-        for container in containers:
-            image_name = container.image.tags[0] if container.image.tags else "<unknown>"
+        # Identify the newest version of each image
+        for image in images:
+            if image.tags:
+                for tag in image.tags:
+                    repo, version = tag.split(":") if ":" in tag else (tag, "latest")
+                    if repo not in unique_images or unique_images[repo]["created"] < image.attrs["Created"]:
+                        unique_images[repo] = {"tag": tag, "created": image.attrs["Created"]}
+
+        scan_results = []
+        scan_stats = []
+        for repo, image_info in unique_images.items():
+            tag = image_info["tag"]
             result = scan_engine.scan_target(
                 scan_type="image",
-                target=image_name,
+                target=tag,
                 sbom=False,
                 compliance=False,
                 secrets=False,
@@ -146,9 +161,18 @@ def full_scan():
                 tag=None,
                 commit=None
             )
-            scan_results.append({"image": image_name, "result": result})
+            
+            scan_results.append({
+                "image": tag,
+                "result": result
+            })
+            
+            scan_stats.append(calculate_vulnerability_stats(result))
 
-        return {"success": True, "results": scan_results}
+
+        scan_filename = save_full_scan_results(scan_results)
+
+        return {"success": True,"count": scan_stats , "file": scan_filename}
 
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -156,14 +180,27 @@ def full_scan():
 @router.post("/scan/specific")
 def specific_scan(targets: list[str] = Body(..., embed=True)):
     """
-    Trigger a scan for a list of specific containers or images.
+    Trigger a scan for a list of specific images, scanning only the newest version of each image.
     """
     try:
+        images = docker_client.images.list()
+        unique_images = {}
+
+        # Identify the newest version of each image in the targets
+        for image in images:
+            if image.tags:
+                for tag in image.tags:
+                    repo, version = tag.split(":") if ":" in tag else (tag, "latest")
+                    if repo in targets and (repo not in unique_images or unique_images[repo]["created"] < image.attrs["Created"]):
+                        unique_images[repo] = {"tag": tag, "created": image.attrs["Created"]}
+
         scan_results = []
-        for target in targets:
+
+        for repo, image_info in unique_images.items():
+            tag = image_info["tag"]
             result = scan_engine.scan_target(
                 scan_type="image",
-                target=target,
+                target=tag,
                 sbom=True,
                 compliance=False,
                 secrets=True,
@@ -172,35 +209,13 @@ def specific_scan(targets: list[str] = Body(..., embed=True)):
                 tag=None,
                 commit=None
             )
-            scan_results.append({"target": target, "result": result})
+            scan_file = save_scan_result("image", tag, result)
+            scan_results.append({"target": tag, "result": result, "file": scan_file})
 
         return {"success": True, "results": scan_results}
 
     except Exception as e:
         return {"success": False, "error": str(e)}
-
-
-@router.get("/target/list")
-def list_targets():
-    """Retrieve all available Docker images."""
-    try:
-        images = docker_client.images.list()
-        image_tags = []
-        
-        for image in images:
-            if image.tags:
-                image_tags.extend(image.tags)
-            else:
-                image_tags.append(f"<none>:{image.short_id}")
-        
-        return {
-            "success": True,
-            "images": list(dict.fromkeys(image_tags))
-        }
-    except Exception as e:
-        return {"success": False, "error": "Failed to retrieve Docker images"}
-    
-
 
 
 @router.post("/extract")
@@ -257,6 +272,26 @@ def scan_docker_file(file_path: str = Body(..., embed=True)):
 
     return {"success": True, "results": scan_results}
 
+@router.get("/target/list")
+def list_targets():
+    """Retrieve all available Docker images."""
+    try:
+        images = docker_client.images.list()
+        image_tags = []
+        
+        for image in images:
+            if image.tags:
+                image_tags.extend(image.tags)
+            else:
+                image_tags.append(f"<none>:{image.short_id}")
+        
+        return {
+            "success": True,
+            "images": list(dict.fromkeys(image_tags))
+        }
+    except Exception as e:
+        return {"success": False, "error": "Failed to retrieve Docker images"}
+    
 @router.get("/target/local-git")
 def list_local_git_repos():
     """
