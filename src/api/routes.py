@@ -10,7 +10,7 @@ from datetime import datetime
 import docker
 import glob
 import sys
-
+import logging
 
 
 
@@ -101,7 +101,6 @@ def get_scan(scan_id: str):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-
 @router.get("/scan/latest")
 def get_latest_scans():
     """
@@ -150,6 +149,7 @@ def full_scan():
         scan_stats = []
         for repo, image_info in unique_images.items():
             tag = image_info["tag"]
+            print(f"Scanning image: {tag}") 
             result = scan_engine.scan_target(
                 scan_type="image",
                 target=tag,
@@ -181,41 +181,41 @@ def full_scan():
 def specific_scan(targets: list[str] = Body(..., embed=True)):
     """
     Trigger a scan for a list of specific images, scanning only the newest version of each image.
+    Store all results in a single file.
     """
     try:
-        images = docker_client.images.list()
-        unique_images = {}
-
-        # Identify the newest version of each image in the targets
-        for image in images:
-            if image.tags:
-                for tag in image.tags:
-                    repo, version = tag.split(":") if ":" in tag else (tag, "latest")
-                    if repo in targets and (repo not in unique_images or unique_images[repo]["created"] < image.attrs["Created"]):
-                        unique_images[repo] = {"tag": tag, "created": image.attrs["Created"]}
-
+        
         scan_results = []
-
-        for repo, image_info in unique_images.items():
-            tag = image_info["tag"]
+        scan_stats = []
+        for item in targets:
+            tag = item.strip()
+            logging.info(f"Scanning image: {tag}")           
             result = scan_engine.scan_target(
                 scan_type="image",
                 target=tag,
-                sbom=True,
+                sbom=False,
                 compliance=False,
-                secrets=True,
+                secrets=False,
                 license=False,
                 branch=None,
                 tag=None,
                 commit=None
             )
-            scan_file = save_scan_result("image", tag, result)
-            scan_results.append({"target": tag, "result": result, "file": scan_file})
 
-        return {"success": True, "results": scan_results}
+            scan_results.append({
+                "image": tag,
+                "result": result
+            })
+
+            scan_stats.append(calculate_vulnerability_stats(result, tag))
+
+        scan_filename = save_full_scan_results(scan_results)
+
+        return {"success": True, "count": scan_stats, "file": scan_filename}
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
 
 
 @router.post("/extract")
