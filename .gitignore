@@ -36,3 +36,4 @@ htmlcov/
 *.swp
 *~
 scans/
+*.db

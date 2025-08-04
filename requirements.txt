@@ -5,3 +5,5 @@ httpx
 pyyaml 
 docker
 glob2
+sqlalchemy
+pytest # only for testing and devolopment
