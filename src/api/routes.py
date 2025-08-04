@@ -1,3 +1,4 @@
+
 # src/api/routes.py
 from fastapi import APIRouter, Response, Body, Query
 from api.schemas import ScanRequest, ScanResult
@@ -15,8 +16,8 @@ import sys
 import logging
 from fastapi.responses import FileResponse
 import tempfile
-
-
+import subprocess
+import shutil
 
 router = APIRouter()
 
@@ -439,3 +440,242 @@ def delete_scan_job(job_id: str):
     db.commit()
     db.close()
     return {"success": True, "message": f"Job {job_id} and associated file deleted."}
+
+
+
+@router.post(
+    "/scan/repo/async",
+    summary="Submit a git repo scan job (async) for vuln scan and/or SBOM",
+    response_description="Job ID and submission status",
+    tags=["Repository Scans", "Scan Jobs"],
+    response_model=dict,
+    responses={
+        200: {"description": "Job submitted successfully"},
+        500: {"description": "Internal server error"}
+    },
+)
+def scan_git_repo_async(
+    repo_url: str = Body(..., embed=True, description="Remote repo URL (https) or local path"),
+    sbom: bool = Body(False, embed=True, description="Generate SBOM if true"),
+    branch: str = Body(None, embed=True, description="Branch name (optional)"),
+    tag: str = Body(None, embed=True, description="Tag name (optional)"),
+    commit: str = Body(None, embed=True, description="Commit hash (optional)"),
+    token: str = Body(None, embed=True, description="Access token for private repos (optional)"),
+    user_project: str = Body(None, embed=True, description="User/project identifier (optional)")
+):
+    """
+    Submit a git repo scan job (async) for vuln scan and/or SBOM. Returns a job ID.
+    """
+    job_id = job_manager.submit_job(
+        _run_repo_scan_job,
+        repo_url, sbom, branch, tag, commit, token, user_project,
+        user_project=user_project,
+        parameters={
+            "type": "repo",
+            "repo_url": repo_url,
+            "sbom": sbom,
+            "branch": branch,
+            "tag": tag,
+            "commit": commit,
+            "token": token
+        }
+    )
+    return {"job_id": job_id, "status": "submitted"}
+
+def _run_repo_scan_job(repo_url, sbom, branch, tag, commit, token, user_project=None):
+    """
+    Job function to scan a git repo and save results (and SBOM if requested).
+    """
+    try:
+        env = os.environ.copy()
+        if token:
+            env["GITHUB_TOKEN"] = token
+        scan_result = scan_engine.scan_target(
+            scan_type="repo",
+            target=repo_url,
+            sbom=sbom,
+            branch=branch,
+            tag=tag,
+            commit=commit
+        )
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        month_folder = datetime.now().strftime("%Y-%m")
+        scan_folder = os.path.join(SCAN_RESULTS_DIR, month_folder)
+        os.makedirs(scan_folder, exist_ok=True)
+        scan_filename = os.path.join(scan_folder, f"repo_scan_{timestamp}.json")
+        with open(scan_filename, "w") as f:
+            json.dump(scan_result, f, indent=4)
+
+        sbom_filename = None
+        if sbom and scan_result.get("success"):
+            sbom_folder = os.path.join(SBOM_DIR, month_folder)
+            os.makedirs(sbom_folder, exist_ok=True)
+            sbom_filename = os.path.join(sbom_folder, f"repo_sbom_{timestamp}.json")
+            sbom_content = scan_result.get("result")
+            if isinstance(sbom_content, str):
+                with open(sbom_filename, "w", encoding="utf-8") as f:
+                    f.write(sbom_content)
+            else:
+                with open(sbom_filename, "w", encoding="utf-8") as f:
+                    json.dump(sbom_content, f, indent=4)
+
+        return {"success": scan_result.get("success", False), "scan_file": scan_filename, "sbom_file": sbom_filename, "error": scan_result.get("error")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.post(
+    "/scan/repo",
+    summary="Scan a git repository (remote public/private or local) for vulnerabilities and/or generate SBOM",
+    response_description="Scan result and/or SBOM file",
+    tags=["Repository Scans"],
+    responses={
+        200: {"description": "Scan result and/or SBOM file"},
+        400: {"description": "Invalid input or scan error"},
+        500: {"description": "Internal server error"}
+    },
+)
+def scan_git_repo(
+    repo_url: str = Body(..., embed=True, description="Remote repo URL (https) or local path"),
+    sbom: bool = Body(False, embed=True, description="Generate SBOM if true"),
+    branch: str = Body(None, embed=True, description="Branch name (optional)"),
+    tag: str = Body(None, embed=True, description="Tag name (optional)"),
+    commit: str = Body(None, embed=True, description="Commit hash (optional)"),
+    token: str = Body(None, embed=True, description="Access token for private repos (optional)")
+):
+    """
+    Scan a git repository (remote public/private or local) for vulnerabilities and/or generate SBOM.
+    Returns scan result and/or SBOM file as download links.
+    """
+    try:
+        # If token is provided, set env var for Trivy
+        env = os.environ.copy()
+        if token:
+            env["GITHUB_TOKEN"] = token
+        # Run vulnerability scan
+        scan_result = scan_engine.scan_target(
+            scan_type="repo",
+            target=repo_url,
+            sbom=sbom,
+            branch=branch,
+            tag=tag,
+            commit=commit
+        )
+        # Save scan result
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        month_folder = datetime.now().strftime("%Y-%m")
+        scan_folder = os.path.join(SCAN_RESULTS_DIR, month_folder)
+        os.makedirs(scan_folder, exist_ok=True)
+        scan_filename = os.path.join(scan_folder, f"repo_scan_{timestamp}.json")
+        with open(scan_filename, "w") as f:
+            json.dump(scan_result, f, indent=4)
+
+        # If SBOM requested and successful, save SBOM
+        sbom_filename = None
+        if sbom and scan_result.get("success"):
+            sbom_folder = os.path.join(SBOM_DIR, month_folder)
+            os.makedirs(sbom_folder, exist_ok=True)
+            sbom_filename = os.path.join(sbom_folder, f"repo_sbom_{timestamp}.json")
+            # If scan_result["result"] is a string, write as text, else as JSON
+            sbom_content = scan_result.get("result")
+            if isinstance(sbom_content, str):
+                with open(sbom_filename, "w", encoding="utf-8") as f:
+                    f.write(sbom_content)
+            else:
+                with open(sbom_filename, "w", encoding="utf-8") as f:
+                    json.dump(sbom_content, f, indent=4)
+
+        response = {"success": scan_result.get("success", False), "scan_file": scan_filename}
+        if sbom_filename:
+            response["sbom_file"] = sbom_filename
+        if not scan_result.get("success"):
+            response["error"] = scan_result.get("error", "Scan failed")
+        return response
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def _run_repo_secret_scan_job(repo_url, branch, token, user_project=None):
+    """
+    Job function to scan a git repo for secrets using Gitleaks and save results.
+    """
+    tmp_dir = None
+    try:
+        # Prepare repo for scanning
+        is_remote = repo_url.startswith("http://") or repo_url.startswith("https://") or repo_url.startswith("git@")
+        if is_remote:
+            tmp_dir = tempfile.mkdtemp(prefix="gitleaks_repo_")
+            clone_cmd = ["git", "clone", repo_url, tmp_dir]
+            env = os.environ.copy()
+            if token and "github.com" in repo_url:
+                # Insert token into URL for private GitHub
+                repo_url_with_token = repo_url.replace("https://", f"https://{token}@")
+                clone_cmd = ["git", "clone", repo_url_with_token, tmp_dir]
+                if branch:
+                    clone_cmd += ["--branch", branch]
+            subprocess.run(clone_cmd, check=True)
+            scan_path = tmp_dir
+            logging.info(f"Cloned repo to temporary directory: {scan_path}")
+        else:
+            scan_path = repo_url
+
+        # Run Gitleaks
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        month_folder = datetime.now().strftime("%Y-%m")
+        scan_folder = os.path.join(SCAN_RESULTS_DIR, month_folder)
+        os.makedirs(scan_folder, exist_ok=True)
+        result_file = os.path.abspath(os.path.join(scan_folder, f"gitleaks_{timestamp}.json"))
+        logging.info(f"Running Gitleaks on {scan_path} with result file {result_file}")
+        gitleaks_cmd = ["gitleaks", "detect", "-f","json","-s", scan_path, "--report-path", result_file]
+        logging.info(f"Gitleaks command: {' '.join(gitleaks_cmd)}")
+        proc = subprocess.run(gitleaks_cmd, capture_output=True, text=True)
+        logging.info(f"Gitleaks output: {proc.stdout}")
+
+        # Optionally, load and return the results
+        with open(result_file, "r") as f:
+            results = json.load(f)
+            length_results = len(results)
+
+        # For job_manager: use 'file' for result_file, 'scan_stats' as number of possible leaks
+        return {
+            "success": True,
+            "file": result_file,
+            "count": {
+            "nbr_possible_leaks": length_results},
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        if tmp_dir and os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+
+@router.post(
+    "/scan/repo/secrets/async",
+    summary="Submit a git repo secret scan job (async) using Gitleaks",
+    response_description="Job ID and submission status",
+    tags=["Repository Scans", "Scan Jobs", "Secrets"],
+    response_model=dict,
+    responses={
+        200: {"description": "Job submitted successfully"},
+        500: {"description": "Internal server error"}
+    },
+)
+def scan_git_repo_secrets_async(
+    repo_url: str = Body(..., embed=True, description="Remote repo URL (https) or local path"),
+    branch: str = Body(None, embed=True, description="Branch name (optional)"),
+    token: str = Body(None, embed=True, description="Access token for private repos (optional)"),
+    user_project: str = Body(None, embed=True, description="User/project identifier (optional)")
+):
+    """
+    Submit a git repo secret scan job (async) using Gitleaks. Returns a job ID.
+    """
+    job_id = job_manager.submit_job(
+        _run_repo_secret_scan_job,
+        repo_url, branch, token, user_project,
+        user_project=user_project,
+        parameters={
+            "type": "repo_secrets",
+            "repo_url": repo_url,
+            "branch": branch,
+            "token": token
+        }
+    )
+    return {"job_id": job_id, "status": "submitted"}

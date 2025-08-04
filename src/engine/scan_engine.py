@@ -44,8 +44,7 @@ def scan_target(scan_type: str, target: str, sbom=False, compliance=None, secret
         # Normal scan or SBOM scan
         cmd = SCAN_TYPE_TO_CMD[scan_type](target)
         # Add advanced options
-        if compliance:
-            cmd += ["--compliance", compliance]
+        
         if secrets:
             cmd += ["--scanners", "secret"]
         if license:
