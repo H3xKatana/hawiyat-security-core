@@ -12,6 +12,7 @@ services:
       - ./scans:/app/scans 
       - ./test-files:/app/test-files
       - ./requirements.txt:/app/requirements.txt
+      - ./tests:/app/tests
 
       - /etc/hawiyat:/etc/hawiyat # binding host machine hawiyat configs
       - /var/run/docker.sock:/var/run/docker.sock # binding the host machine docker socket to our container
