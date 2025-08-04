@@ -2,6 +2,8 @@
 from fastapi import APIRouter, Response, Body, Query
 from api.schemas import ScanRequest, ScanResult
 from engine import scan_engine
+from engine.scan_service import ScanService
+from engine.job_manager import JobManager
 import json
 import os
 from utils.extract_containers import extract_containers_and_images 
@@ -11,6 +13,8 @@ import docker
 import glob
 import sys
 import logging
+from fastapi.responses import FileResponse
+import tempfile
 
 
 
@@ -22,6 +26,113 @@ os.makedirs(SCAN_RESULTS_DIR, exist_ok=True)
 os.makedirs(SBOM_DIR, exist_ok=True)
 
 docker_client = docker.from_env()
+scan_service = ScanService()
+job_manager = JobManager()
+
+@router.post(
+    "/scan/full/async",
+    summary="Submit a full scan job (async)",
+    response_description="Job ID and submission status",
+    tags=["Scan Jobs"],
+    response_model=dict,
+    responses={
+        200: {"description": "Job submitted successfully"},
+        500: {"description": "Internal server error"}
+    },
+)
+def full_scan_async(user_project: str = Body(None, embed=True)):
+    """
+    Submit a full scan job (async). Returns a job ID.
+    """
+    job_id = job_manager.submit_job(_run_full_scan_job, user_project=user_project, parameters={"type": "full"})
+    return {"job_id": job_id, "status": "submitted"}
+
+def _run_full_scan_job():
+    unique_images = scan_service.get_unique_images()
+    scan_results, scan_stats = scan_service.scan_images(unique_images)
+    scan_filename = save_full_scan_results(scan_results)
+    return {"count": scan_stats, "file": scan_filename}
+
+
+@router.post(
+    "/scan/specific/async",
+    summary="Submit a specific scan job (async)",
+    response_description="Job ID and submission status",
+    tags=["Scan Jobs"],
+    response_model=dict,
+    responses={
+        200: {"description": "Job submitted successfully"},
+        500: {"description": "Internal server error"}
+    },
+)
+def specific_scan_async(tags: list[str] = Body(..., embed=True), user_project: str = Body(None, embed=True)):
+    """
+    Submit a specific scan job (async) for provided image tags. Returns a job ID.
+    """
+    job_id = job_manager.submit_job(_run_specific_scan_job, tags, user_project=user_project, parameters={"type": "specific", "tags": tags})
+    return {"job_id": job_id, "status": "submitted"}
+from engine.db import SessionLocal
+from engine.models import ScanJob
+@router.get("/scan/history")
+def get_scan_history(user_project: str = None, status: str = None, limit: int = 20, offset: int = 0):
+    """
+    Query scan job history by user/project and/or status.
+    """
+    db = SessionLocal()
+    query = db.query(ScanJob)
+    if user_project:
+        query = query.filter(ScanJob.user_project == user_project)
+    if status:
+        query = query.filter(ScanJob.status == status)
+    jobs = query.order_by(ScanJob.created_at.desc()).offset(offset).limit(limit).all()
+    db.close()
+    return [{
+        "job_id": job.job_id,
+        "user_project": job.user_project,
+        "status": job.status,
+        "result_file": job.result_file,
+        "created_at": str(job.created_at),
+        "finished_at": str(job.finished_at) if job.finished_at else None,
+        "error": job.error
+    } for job in jobs]
+
+def _run_specific_scan_job(tags):
+    scan_results = []
+    scan_stats = []
+    for tag in tags:
+        result = scan_engine.scan_target(
+            scan_type="image",
+            target=tag,
+            sbom=False,
+            compliance=False,
+            secrets=False,
+            license=False,
+            branch=None,
+            tag=None,
+            commit=None
+        )
+        scan_results.append({"image": tag, "result": result})
+        scan_stats.append(calculate_vulnerability_stats(result, tag))
+    scan_filename = save_full_scan_results(scan_results)
+    return {"count": scan_stats, "file": scan_filename}
+
+@router.get(
+    "/scan/job/{job_id}",
+    summary="Get scan job status and result",
+    response_description="Scan job status, result file, and stats",
+    tags=["Scan Jobs"],
+    response_model=dict,
+    responses={
+        200: {"description": "Job status and result"},
+        404: {"description": "Job not found"},
+        500: {"description": "Internal server error"}
+    },
+)
+def get_scan_job_status(job_id: str):
+    """
+    Get the status and result of a scan job by job ID.
+    """
+    return job_manager.get_status(job_id)
 
 @router.get("/health")
 def health_check():
@@ -60,28 +171,38 @@ def scan(request: ScanRequest):
 
     return {"success": True, "scan_file": scan_filename, "sbom_file": sbom_filename}
 
-@router.get("/scans")
-def get_scans(
-    month: str = Query(None, description="Filter scans by month in YYYY-MM format"),
-    limit: int = Query(10, description="Limit the number of results returned"),
-    offset: int = Query(0, description="Offset for pagination")
-):
-    try:
-        scans = []
-        base_dir = os.path.join(SCAN_RESULTS_DIR, month) if month else SCAN_RESULTS_DIR
-        if os.path.exists(base_dir):
-            for root, _, files in os.walk(base_dir):
-                for file in files:
-                    if file.endswith(".json"):
-                        scans.append(os.path.join(root, file))
-
-        scans = sorted(scans, reverse=True)[offset:offset + limit]
-        return {"success": True, "scans": scans}
-
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-@router.get("/scans/{scan_id}")
+@router.get(
+    "/scan/history",
+    summary="Query scan job history",
+    response_description="List of scan jobs filtered by user/project and status",
+    tags=["Scan Jobs"],
+    response_model=list,
+    responses={
+        200: {"description": "Scan job history"},
+        500: {"description": "Internal server error"}
+    },
+)
+def get_scan_history(user_project: str = None, status: str = None, limit: int = 20, offset: int = 0):
+    """
+    Query scan job history by user/project and/or status.
+    """
+    db = SessionLocal()
+    query = db.query(ScanJob)
+    if user_project:
+        query = query.filter(ScanJob.user_project == user_project)
+    if status:
+        query = query.filter(ScanJob.status == status)
+    jobs = query.order_by(ScanJob.created_at.desc()).offset(offset).limit(limit).all()
+    db.close()
+    return [{
+        "job_id": job.job_id,
+        "user_project": job.user_project,
+        "status": job.status,
+        "result_file": job.result_file,
+        "created_at": str(job.created_at),
+        "finished_at": str(job.finished_at) if job.finished_at else None,
+        "error": job.error
+    } for job in jobs]
 def get_scan(scan_id: str):
     """
     Retrieve the content of a specific scan file by its ID.
@@ -134,46 +255,10 @@ def full_scan():
     Store all results in a single file.
     """
     try:
-        images = docker_client.images.list()
-        unique_images = {}
-
-        # Identify the newest version of each image
-        for image in images:
-            if image.tags:
-                for tag in image.tags:
-                    repo, version = tag.split(":") if ":" in tag else (tag, "latest")
-                    if repo not in unique_images or unique_images[repo]["created"] < image.attrs["Created"]:
-                        unique_images[repo] = {"tag": tag, "created": image.attrs["Created"]}
-
-        scan_results = []
-        scan_stats = []
-        for repo, image_info in unique_images.items():
-            tag = image_info["tag"]
-            print(f"Scanning image: {tag}") 
-            result = scan_engine.scan_target(
-                scan_type="image",
-                target=tag,
-                sbom=False,
-                compliance=False,
-                secrets=False,
-                license=False,
-                branch=None,
-                tag=None,
-                commit=None
-            )
-            
-            scan_results.append({
-                "image": tag,
-                "result": result
-            })
-            
-            scan_stats.append(calculate_vulnerability_stats(result,tag))
-
-
+        unique_images = scan_service.get_unique_images()
+        scan_results, scan_stats = scan_service.scan_images(unique_images)
         scan_filename = save_full_scan_results(scan_results)
-
-        return {"success": True,"count": scan_stats , "file": scan_filename}
-
+        return {"success": True, "count": scan_stats, "file": scan_filename}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -184,35 +269,10 @@ def specific_scan(targets: list[str] = Body(..., embed=True)):
     Store all results in a single file.
     """
     try:
-        
-        scan_results = []
-        scan_stats = []
-        for item in targets:
-            tag = item.strip()
-            logging.info(f"Scanning image: {tag}")           
-            result = scan_engine.scan_target(
-                scan_type="image",
-                target=tag,
-                sbom=False,
-                compliance=False,
-                secrets=False,
-                license=False,
-                branch=None,
-                tag=None,
-                commit=None
-            )
-
-            scan_results.append({
-                "image": tag,
-                "result": result
-            })
-
-            scan_stats.append(calculate_vulnerability_stats(result, tag))
-
+        unique_images = scan_service.get_unique_images(targets)
+        scan_results, scan_stats = scan_service.scan_images(unique_images)
         scan_filename = save_full_scan_results(scan_results)
-
         return {"success": True, "count": scan_stats, "file": scan_filename}
-
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -308,3 +368,74 @@ def list_local_git_repos():
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@router.post(
+    "/scan/sbom",
+    summary="Generate SBOM for a specific image, tag, or repo",
+    response_description="SBOM file (CycloneDX or SPDX)",
+    tags=["SBOM"],
+    responses={
+        200: {"description": "SBOM file returned"},
+        400: {"description": "Invalid input or scan error"},
+        500: {"description": "Internal server error"}
+    },
+)
+def generate_sbom(
+    target: str = Body(..., embed=True),
+    scan_type: str = Body("image", embed=True),
+    format: str = Body("cyclonedx", embed=True)
+):
+    """
+    Generate an SBOM for a specific Docker image (by tag), repository, or image name using Trivy.
+    scan_type can be 'image', 'repo', or other supported types.
+    format can be 'cyclonedx' (default) or 'spdx'.
+    Returns the SBOM as a downloadable file.
+    """
+    try:
+        # Use scan_engine to generate SBOM file
+        with tempfile.NamedTemporaryFile(suffix=f'.{format}.json', delete=False) as sbom_file:
+            sbom_path = sbom_file.name
+        result = scan_engine.scan_target(scan_type=scan_type, target=target, sbom=True)
+        if result.get("success"):
+            # Write SBOM content to file
+            with open(sbom_path, "w", encoding="utf-8") as f:
+                f.write(result.get("result"))
+            filename = f"sbom_{scan_type}_{target.replace(':', '_')}.{format}.json"
+            return FileResponse(sbom_path, filename=filename, media_type="application/json")
+        else:
+            return {"success": False, "error": result.get("error", "SBOM generation failed")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.delete(
+    "/scan/job/{job_id}",
+    summary="Delete a scan job and its associated result file",
+    response_description="Job deletion status",
+    tags=["Scan Jobs"],
+    response_model=dict,
+    responses={
+        200: {"description": "Job deleted successfully"},
+        404: {"description": "Job not found"},
+        500: {"description": "Internal server error"}
+    },
+)
+def delete_scan_job(job_id: str):
+    """
+    Delete a scan job from the database and remove its associated result file (if any).
+    """
+    db = SessionLocal()
+    job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
+    if not job:
+        db.close()
+        return {"success": False, "error": "Job not found"}
+    # Remove result file if it exists
+    if job.result_file and os.path.exists(job.result_file):
+        try:
+            os.remove(job.result_file)
+        except Exception as e:
+            db.close()
+            return {"success": False, "error": f"Failed to delete result file: {e}"}
+    db.delete(job)
+    db.commit()
+    db.close()
+    return {"success": True, "message": f"Job {job_id} and associated file deleted."}
