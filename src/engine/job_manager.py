@@ -11,6 +11,8 @@ from engine.models import ScanJob
 import json
 import logging
 
+
+# simple in memory job queue and status tracker
 class JobManager:
     def __init__(self):
         self.jobs: Dict[str, dict] = {}
