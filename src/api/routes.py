@@ -445,7 +445,7 @@ def delete_scan_job(job_id: str):
 
 @router.post(
     "/scan/repo/async",
-    summary="Submit a git repo scan job (async) for vuln scan and/or SBOM",
+    summary="Submit a git repo scan job (async) for vuln scan ",
     response_description="Job ID and submission status",
     tags=["Repository Scans", "Scan Jobs"],
     response_model=dict,
@@ -456,7 +456,7 @@ def delete_scan_job(job_id: str):
 )
 def scan_git_repo_async(
     repo_url: str = Body(..., embed=True, description="Remote repo URL (https) or local path"),
-    sbom: bool = Body(False, embed=True, description="Generate SBOM if true"),
+    
     branch: str = Body(None, embed=True, description="Branch name (optional)"),
     tag: str = Body(None, embed=True, description="Tag name (optional)"),
     commit: str = Body(None, embed=True, description="Commit hash (optional)"),
@@ -466,14 +466,15 @@ def scan_git_repo_async(
     """
     Submit a git repo scan job (async) for vuln scan and/or SBOM. Returns a job ID.
     """
+    logging.info(f"Submitting repo scan job for {repo_url} on branch {branch}, tag {tag}, commit {commit}")
     job_id = job_manager.submit_job(
         _run_repo_scan_job,
-        repo_url, sbom, branch, tag, commit, token, user_project,
+        repo_url, branch, tag, commit, token, user_project,
         user_project=user_project,
         parameters={
             "type": "repo",
             "repo_url": repo_url,
-            "sbom": sbom,
+            
             "branch": branch,
             "tag": tag,
             "commit": commit,
@@ -482,18 +483,31 @@ def scan_git_repo_async(
     )
     return {"job_id": job_id, "status": "submitted"}
 
-def _run_repo_scan_job(repo_url, sbom, branch, tag, commit, token, user_project=None):
+def _run_repo_scan_job(repo_url, branch, tag, commit, token, user_project=None):
     """
     Job function to scan a git repo and save results (and SBOM if requested).
     """
+    if branch == "string" or branch is None:
+        branch = "main"
+    tmp_dir = None
     try:
         env = os.environ.copy()
         if token:
             env["GITHUB_TOKEN"] = token
+        # If remote repo, clone to temp dir
+        is_remote = repo_url.startswith("http://") or repo_url.startswith("https://") or repo_url.startswith("git@")
+        scan_path = repo_url
+        if is_remote:
+            tmp_dir = tempfile.mkdtemp(prefix="repo_scan_")
+            clone_cmd = ["git", "clone", repo_url, tmp_dir]
+            if branch:
+                clone_cmd += ["--branch", branch]
+            subprocess.run(clone_cmd, check=True)
+            scan_path = tmp_dir
+            logging.info(f"Cloned repo to temporary directory: {scan_path}")
         scan_result = scan_engine.scan_target(
             scan_type="repo",
-            target=repo_url,
-            sbom=sbom,
+            target=scan_path,
             branch=branch,
             tag=tag,
             commit=commit
@@ -505,23 +519,22 @@ def _run_repo_scan_job(repo_url, sbom, branch, tag, commit, token, user_project=
         scan_filename = os.path.join(scan_folder, f"repo_scan_{timestamp}.json")
         with open(scan_filename, "w") as f:
             json.dump(scan_result, f, indent=4)
-
-        sbom_filename = None
-        if sbom and scan_result.get("success"):
-            sbom_folder = os.path.join(SBOM_DIR, month_folder)
-            os.makedirs(sbom_folder, exist_ok=True)
-            sbom_filename = os.path.join(sbom_folder, f"repo_sbom_{timestamp}.json")
-            sbom_content = scan_result.get("result")
-            if isinstance(sbom_content, str):
-                with open(sbom_filename, "w", encoding="utf-8") as f:
-                    f.write(sbom_content)
-            else:
-                with open(sbom_filename, "w", encoding="utf-8") as f:
-                    json.dump(sbom_content, f, indent=4)
-
-        return {"success": scan_result.get("success", False), "scan_file": scan_filename, "sbom_file": sbom_filename, "error": scan_result.get("error")}
+        logging.info(f'file: {scan_filename}, scan_stats: None, error: {scan_result.get("error")}')
+        scan_stats=[]
+        scan_stats.append({"repo": repo_url})
+        scan_stats.append(calculate_vulnerability_stats(scan_result))
+        logging.info(f"Scan completed for {repo_url}. Results saved to {scan_filename} {scan_stats}")
+        return {
+            "success": True,
+            "file": scan_filename,
+            "count": scan_stats,
+            "error": scan_result.get("error")
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
+    finally:
+        if tmp_dir and os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
 
 @router.post(
     "/scan/repo",
@@ -609,7 +622,7 @@ def _run_repo_secret_scan_job(repo_url, branch, token, user_project=None):
                 # Insert token into URL for private GitHub
                 repo_url_with_token = repo_url.replace("https://", f"https://{token}@")
                 clone_cmd = ["git", "clone", repo_url_with_token, tmp_dir]
-                if branch:
+                if branch :
                     clone_cmd += ["--branch", branch]
             subprocess.run(clone_cmd, check=True)
             scan_path = tmp_dir
@@ -667,6 +680,8 @@ def scan_git_repo_secrets_async(
     """
     Submit a git repo secret scan job (async) using Gitleaks. Returns a job ID.
     """
+    if branch == "string" or branch is None:
+            branch = "main"  # Default branch if not specified
     job_id = job_manager.submit_job(
         _run_repo_secret_scan_job,
         repo_url, branch, token, user_project,
