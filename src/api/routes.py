@@ -1,5 +1,5 @@
 # src/api/routes.py
-from fastapi import APIRouter, Response, Body, Query
+from fastapi import APIRouter, Response, Body, Query ,Request
 from api.schemas import ScanRequest, ScanResult
 from engine import scan_engine
 from engine.scan_service import ScanService
@@ -724,3 +724,14 @@ def get_webhook_config():
         return {"success": True, "webhook_url": url}
     except Exception as e:
         return {"success": False, "error": str(e)}
+    
+@router.post("/webhook/local", summary="Test your local webhook receiver", tags=["Webhook"])
+async def test_webhook_receiver(request: Request):
+    try:
+        data = await request.json()
+        logging.info(f"[webhook.local] Received webhook data: {data}")
+        return {"success": True, "received": data}
+    except Exception as e:
+        logging.error(f"[webhook.local] Failed to parse webhook data: {e}")
+        return {"success": False, "error": str(e)}
+    
