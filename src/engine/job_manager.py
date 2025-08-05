@@ -10,13 +10,23 @@ from engine.db import SessionLocal
 from engine.models import ScanJob
 import json
 import logging
+import pathlib
+import requests
 
-
+WEBHOOK_FILE_PATH = "/app/webhook.txt"
 # simple in memory job queue and status tracker
 class JobManager:
     def __init__(self):
         self.jobs: Dict[str, dict] = {}
         self.lock = threading.Lock()
+
+    def _post_webhook(self, webhook_url, data):
+        if webhook_url:
+            try:
+                requests.post(webhook_url, json=data, timeout=10)
+                logging.info(f"Posted job result to webhook: {webhook_url}")
+            except Exception as e:
+                logging.error(f"Failed to POST to webhook {webhook_url}: {e}")
 
     def submit_job(self, func, *args, user_project=None, parameters=None, **kwargs) -> str:
         job_id = str(uuid.uuid4())
@@ -34,6 +44,12 @@ class JobManager:
 
     def _run_job(self, job_id, func, args, kwargs, user_project, parameters):
         db = SessionLocal()
+        webhook_url = None
+        # If not set, try to read from webhook.txt
+        if not webhook_url:
+            webhook_path = pathlib.Path("webhook.txt")
+            if webhook_path.exists():
+                webhook_url = webhook_path.read_text().strip()
         try:
             # Update status to running
             job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
@@ -56,6 +72,10 @@ class JobManager:
                 self.jobs[job_id]["status"] = "completed"
                 self.jobs[job_id]["result"] = result
             logging.info(f"[job_id={job_id}] Completed scan job. stats={scan_stats}")
+            # Webhook on success
+            if webhook_url:
+                job_status = self.get_status(job_id)
+                self._post_webhook(webhook_url, job_status)
         except Exception as e:
             if job:
                 job.status = "failed"
@@ -65,6 +85,10 @@ class JobManager:
                 self.jobs[job_id]["status"] = "failed"
                 self.jobs[job_id]["result"] = str(e)
             logging.error(f"[job_id={job_id}] Scan job failed: {e}")
+            # Webhook on failure
+            if webhook_url:
+                job_status = self.get_status(job_id)
+                self._post_webhook(webhook_url, job_status)
         finally:
             db.close()
 

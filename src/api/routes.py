@@ -1,4 +1,3 @@
-
 # src/api/routes.py
 from fastapi import APIRouter, Response, Body, Query
 from api.schemas import ScanRequest, ScanResult
@@ -18,9 +17,10 @@ from fastapi.responses import FileResponse
 import tempfile
 import subprocess
 import shutil
+import pathlib
 
 router = APIRouter()
-
+WEBHOOK_FILE_PATH = "/app/webhook.txt"
 SCAN_RESULTS_DIR = "scans"
 SBOM_DIR = "sbom"
 os.makedirs(SCAN_RESULTS_DIR, exist_ok=True)
@@ -694,3 +694,33 @@ def scan_git_repo_secrets_async(
         }
     )
     return {"job_id": job_id, "status": "submitted"}
+
+
+
+@router.post("/webhook/config", 
+            
+        summary="Set a global webhook URL for all jobs",
+        tags=["Webhook"],
+        responses={
+        200: {"description": " submitted successfully"},
+        500: {"description": "Internal server error"}},
+    )
+def configure_webhook(webhook: str = Body(..., embed=True, description="Webhook URL to POST job results")):
+    try:
+        pathlib.Path(WEBHOOK_FILE_PATH).write_text(webhook.strip())
+        return {"success": True, "webhook_url": webhook.strip()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.get("/webhook/config", summary="Get the current webhook URL", tags=["Webhook"])
+def get_webhook_config():
+    """
+    Get the currently configured webhook URL.
+    """
+    try:
+        if not os.path.exists(WEBHOOK_FILE_PATH):
+            return {"success": False, "error": "Webhook URL not configured"}
+        url = pathlib.Path(WEBHOOK_FILE_PATH).read_text().strip()
+        return {"success": True, "webhook_url": url}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
