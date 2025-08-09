@@ -17,7 +17,7 @@ services:
       - /etc/hawiyat:/etc/hawiyat # binding host machine hawiyat configs
       - /var/run/docker.sock:/var/run/docker.sock # binding the host machine docker socket to our container
     ports:
-      - "8000:8000"
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+      - "8800:8800"
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8800 --reload
     environment:
       - PYTHONUNBUFFERED=1
